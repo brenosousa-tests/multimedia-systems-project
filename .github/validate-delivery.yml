@@ -1,65 +1,179 @@
-name: Validate Delivery
+name: PR Validation
 
 on:
   pull_request:
-    branches: [main]
+    types: [opened, edited, synchronize]
 
 jobs:
-  validate:
+  pr-validation:
+    name: Validate Delivery PR
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v3
+      # ----------------------------
+      # Validate PR description
+      # ----------------------------
+      - name: Validate PR description
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || "";
 
-      - name: Get changed files
-        id: files
+            if (!body.includes("## Delivery")) {
+              core.setFailed("Missing '## Delivery'");
+            }
+
+            if (!body.includes("## Checklist")) {
+              core.setFailed("Missing '## Checklist'");
+            }
+
+      # ----------------------------
+      # Validate checklist completed
+      # ----------------------------
+      - name: Validate checklist
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || "";
+            const unchecked = body.match(/- \[ \]/g);
+
+            if (unchecked) {
+              core.setFailed("Checklist not completed");
+            }
+
+      # ----------------------------
+      # Validate branch name
+      # ----------------------------
+      - name: Validate branch name
         run: |
-          echo "FILES=$(git diff --name-only origin/main)" >> $GITHUB_OUTPUT
+          branch="${{ github.head_ref }}"
 
-      - name: Validate file structure
-        run: |
-          echo "Changed files:"
-          echo "${{ steps.files.outputs.FILES }}"
-
-          FILE_COUNT=$(echo "${{ steps.files.outputs.FILES }}" | wc -l)
-
-          # Mais de 1 arquivo modificado
-          if [ "$FILE_COUNT" -gt 1 ]; then
-            echo "Only ONE file per delivery is allowed"
+          if [[ ! "$branch" =~ ^student-[0-9]+-delivery[1-5]$ ]]; then
+            echo "Branch must follow: student-XX-deliveryX"
             exit 1
           fi
 
-          FILE=$(echo "${{ steps.files.outputs.FILES }}")
+      # ----------------------------
+      # Validate changed files
+      # ----------------------------
+      - name: Validate changed files location
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request.number;
 
-          # Fora da pasta students
-          if [[ "$FILE" != students/* ]]; then
-            echo "File must be inside students/ folder"
-            exit 1
-          fi
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr
+              }
+            );
 
-          # Nome errado
-          if [[ "$FILE" != *delivery1.md && "$FILE" != *delivery2.md && "$FILE" != *delivery3.md && "$FILE" != *delivery4.md && "$FILE" != *delivery5.md ]]; then
-            echo "Invalid file name"
-            exit 1
-          fi
+            const paths = files.map(f => f.filename);
 
-          echo "Structure OK"
+            console.log("Files:", paths);
 
-      - name: Validate content
-        run: |
-          FILE=$(git diff --name-only origin/main)
+            if (paths.length !== 1) {
+              core.setFailed("Only ONE file per delivery is allowed");
+              return;
+            }
 
-          # Arquivo vazio
-          if [ ! -s "$FILE" ]; then
-            echo "File is empty"
-            exit 1
-          fi
+            const file = paths[0];
 
-          # Placeholder não preenchido
-          if grep -q "Name:" "$FILE"; then
-            echo "Student info not filled"
-            exit 1
-          fi
+            // Must be inside students/student-XX-name/
+            if (!file.startsWith("students/student-")) {
+              core.setFailed("File must be inside students/student-XX-name/");
+              return;
+            }
 
-          echo "Content OK"
+            // Extract folder
+            const parts = file.split('/');
+            const folder = parts.slice(0, 2).join('/');
+
+            // Ensure no files outside that folder
+            const invalid = paths.filter(p => !p.startsWith(folder));
+            if (invalid.length > 0) {
+              core.setFailed("Files outside student folder detected");
+              return;
+            }
+
+            // Validate file name
+            const validNames = [
+              "delivery1.md",
+              "delivery2.md",
+              "delivery3.md",
+              "delivery4.md",
+              "delivery5.md"
+            ];
+
+            if (!validNames.some(name => file.endsWith(name))) {
+              core.setFailed("Invalid file name. Must be deliveryX.md");
+              return;
+            }
+
+      # ----------------------------
+      # Validate delivery matches branch
+      # ----------------------------
+      - name: Validate delivery vs branch
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request.number;
+            const branch = context.payload.pull_request.head.ref;
+
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr
+              }
+            );
+
+            const file = files[0].filename;
+
+            if (branch.includes("delivery1") && !file.endsWith("delivery1.md")) {
+              core.setFailed("Branch delivery1 must submit delivery1.md");
+            }
+
+            if (branch.includes("delivery2") && !file.endsWith("delivery2.md")) {
+              core.setFailed("Branch delivery2 must submit delivery2.md");
+            }
+
+            if (branch.includes("delivery3") && !file.endsWith("delivery3.md")) {
+              core.setFailed("Branch delivery3 must submit delivery3.md");
+            }
+
+            if (branch.includes("delivery4") && !file.endsWith("delivery4.md")) {
+              core.setFailed("Branch delivery4 must submit delivery4.md");
+            }
+
+            if (branch.includes("delivery5") && !file.endsWith("delivery5.md")) {
+              core.setFailed("Branch delivery5 must submit delivery5.md");
+            }
+
+      # ----------------------------
+      # Validate file content
+      # ----------------------------
+      - name: Validate file content
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request.number;
+
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr
+              }
+            );
+
+            const file = files[0];
+
+            if (file.changes === 0) {
+              core.setFailed("File appears empty");
+            }
